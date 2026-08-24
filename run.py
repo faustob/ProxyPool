@@ -1,3 +1,4 @@
+import proxypool.telemetry  # noqa: F401 - registers the global OTel SDK and Flask auto-instrumentation before any Flask app is created
 from proxypool.scheduler import Scheduler
 import argparse
 
