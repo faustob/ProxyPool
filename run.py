@@ -1,3 +1,10 @@
+from proxypool.telemetry import setup_telemetry
+
+# Register the global OTel SDK + Flask/Redis instrumentors before anything
+# else is imported, since importing Scheduler transitively constructs the
+# Flask app and Redis client.
+setup_telemetry()
+
 from proxypool.scheduler import Scheduler
 import argparse
 
