@@ -7,6 +7,8 @@ from proxypool.setting import APP_PROD_METHOD_GEVENT, APP_PROD_METHOD_MEINHELD, 
     API_THREADED, API_PORT, ENABLE_SERVER, IS_PROD, APP_PROD_METHOD, \
     ENABLE_GETTER, ENABLE_TESTER, IS_WINDOWS
 from loguru import logger
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
+from proxypool.telemetry import init_telemetry
 
 
 if IS_WINDOWS:
@@ -27,6 +29,10 @@ class Scheduler():
         if not ENABLE_TESTER:
             logger.info('tester not enabled, exit')
             return
+        # safe to call here: run_tester is itself the child process entrypoint
+        # (either the whole OS process, or a forked multiprocessing.Process
+        # target), so any fork has already happened before this executes
+        init_telemetry()
         tester = Tester()
         loop = 0
         while True:
@@ -42,6 +48,10 @@ class Scheduler():
         if not ENABLE_GETTER:
             logger.info('getter not enabled, exit')
             return
+        # safe to call here: run_getter is itself the child process entrypoint
+        # (either the whole OS process, or a forked multiprocessing.Process
+        # target), so any fork has already happened before this executes
+        init_telemetry()
         getter = Getter()
         loop = 0
         while True:
@@ -57,6 +67,13 @@ class Scheduler():
         if not ENABLE_SERVER:
             logger.info('server not enabled, exit')
             return
+        # safe to call here: run_server is itself the child process entrypoint
+        # (either the whole OS process, or a forked multiprocessing.Process
+        # target), so any fork has already happened before this executes;
+        # BatchSpanProcessor/PeriodicExportingMetricReader background threads
+        # must never be started pre-fork
+        init_telemetry()
+        FlaskInstrumentor().instrument_app(app)
         if IS_PROD:
             if APP_PROD_METHOD == APP_PROD_METHOD_GEVENT:
                 try:

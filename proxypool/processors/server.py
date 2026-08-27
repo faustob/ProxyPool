@@ -1,12 +1,15 @@
 import hmac
 import re
-from flask import Flask, g, request, abort
+from flask import Flask, g, request, abort, got_request_exception
+import time
+from opentelemetry import trace
 from proxypool.exceptions import PoolEmptyException
 from proxypool.storages.redis import RedisClient
-from proxypool.setting import API_HOST, API_PORT, API_THREADED, API_KEY, IS_DEV, PROXY_RAND_KEY_DEGRADED
+from proxypool.setting import API_HOST, API_PORT, API_THREADED, API_KEY, IS_DEV, PROXY_RAND_KEY_DEGRADED, SLOW_REQUEST_THRESHOLD
 import functools
 from random import choice, sample
 from proxypool.utils.geo import get_country_iso
+from proxypool.telemetry import http_server_request_duration
 
 __all__ = ['app']
 
@@ -17,6 +20,66 @@ if IS_DEV:
 # allowed characters for the `key` query parameter that selects a redis sub-pool;
 # restricts to a safe charset to avoid probing arbitrary redis keys via the API
 VALID_KEY_PATTERN = re.compile(r'^[a-zA-Z0-9_:\-]{1,64}$')
+
+
+@app.before_request
+def _telemetry_record_request_start():
+    """
+    record the start time of the request so after_request can measure
+    duration for both the http.server.request.duration histogram and the
+    slow-request span event (P99 triage)
+    """
+    g._telemetry_start_time = time.monotonic()
+
+
+@app.after_request
+def _telemetry_record_request_metrics(response):
+    """
+    record http.server.request.duration for every request -- this single
+    histogram backs the HTTP availability (status<500 vs all), P95/P99
+    latency, 5xx error-rate and request-throughput SLIs -- and add a span
+    event when the handler exceeds the configured latency budget to help
+    triage P99 regressions (e.g. unfiltered /all against a large proxy set)
+    """
+    start_time = getattr(g, '_telemetry_start_time', None)
+    if start_time is not None:
+        duration = time.monotonic() - start_time
+        route = request.url_rule.rule if request.url_rule else 'unmatched'
+        http_server_request_duration.record(
+            duration,
+            {
+                'http.request.method': request.method,
+                'url.scheme': request.scheme,
+                'http.response.status_code': response.status_code,
+                'http.route': route,
+            },
+        )
+        if duration > SLOW_REQUEST_THRESHOLD:
+            span = trace.get_current_span()
+            span.add_event(
+                'slow_request',
+                {
+                    'http.route': route,
+                    'http.response.status_code': response.status_code,
+                    'duration_s': duration,
+                },
+            )
+    return response
+
+
+def _telemetry_record_exception(sender, exception, **extra):
+    """
+    listen for Flask's got_request_exception signal (fired before the
+    exception propagates to Flask's default error handling) to tag the
+    current span with the originating exception class, without catching
+    or altering the exception itself
+    """
+    span = trace.get_current_span()
+    span.set_attribute('error.type', type(exception).__name__)
+    span.set_status(trace.StatusCode.ERROR, str(exception))
+
+
+got_request_exception.connect(_telemetry_record_exception, app)
 
 
 def auth_required(func):

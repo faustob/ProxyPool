@@ -5,8 +5,10 @@ from proxypool.setting import REDIS_CONNECTION_STRING, REDIS_HOST, REDIS_PORT, R
     PROXY_SCORE_INIT
 from random import choice, sample
 from typing import List
+import functools
 from loguru import logger
 from proxypool.utils.proxy import is_valid_proxy, convert_proxy_or_proxies
+from proxypool.telemetry import measure_db_operation
 
 
 REDIS_CLIENT_VERSION = redis.__version__
@@ -34,7 +36,8 @@ class RedisClient(object):
             self.db = redis.StrictRedis(
                 host=host, port=port, password=password, db=db, decode_responses=True, **kwargs)
 
-    def add(self, proxy: Proxy, score=PROXY_SCORE_INIT, redis_key=REDIS_KEY) -> int:
+    @measure_db_operation('add')
+    def add(self, proxy: Proxy, score=PROXY_SCORE_INIT, redis_key=REDIS_KEY) -> int:  # type: ignore[return]
         """
         add proxy and set it to init score
         :param proxy: proxy, ip:port, like 8.8.8.8:88
@@ -43,12 +46,13 @@ class RedisClient(object):
         """
         if not is_valid_proxy(f'{proxy.host}:{proxy.port}'):
             logger.info(f'invalid proxy {proxy}, throw it')
-            return
+            return  # type: ignore[return-value]
         if not self.exists(proxy, redis_key):
             if IS_REDIS_VERSION_2:
                 return self.db.zadd(redis_key, score, proxy.string())
             return self.db.zadd(redis_key, {proxy.string(): score})
 
+    @measure_db_operation('random')
     def random(self, redis_key=REDIS_KEY, proxy_score_min=PROXY_SCORE_MIN, proxy_score_max=PROXY_SCORE_MAX) -> Proxy:
         """
         get random proxy
@@ -70,6 +74,7 @@ class RedisClient(object):
         # else raise error
         raise PoolEmptyException
 
+    @measure_db_operation('randoms')
     def randoms(self, count, redis_key=REDIS_KEY, proxy_score_min=PROXY_SCORE_MIN, proxy_score_max=PROXY_SCORE_MAX) -> List[Proxy]:
         """
         get a batch of random proxies
@@ -91,7 +96,8 @@ class RedisClient(object):
         count = min(count, len(proxies))
         return convert_proxy_or_proxies(sample(proxies, count))
 
-    def decrease(self, proxy: Proxy, redis_key=REDIS_KEY, proxy_score_min=PROXY_SCORE_MIN) -> int:
+    @measure_db_operation('decrease')
+    def decrease(self, proxy: Proxy, redis_key=REDIS_KEY, proxy_score_min=PROXY_SCORE_MIN) -> int:  # type: ignore[return]
         """
         decrease score of proxy, if small than PROXY_SCORE_MIN, delete it
         :param proxy: proxy
@@ -107,6 +113,7 @@ class RedisClient(object):
             logger.info(f'{proxy.string()} current score {score}, remove')
             self.db.zrem(redis_key, proxy.string())
 
+    @measure_db_operation('exists')
     def exists(self, proxy: Proxy, redis_key=REDIS_KEY) -> bool:
         """
         if proxy exists
@@ -115,6 +122,7 @@ class RedisClient(object):
         """
         return not self.db.zscore(redis_key, proxy.string()) is None
 
+    @measure_db_operation('max')
     def max(self, proxy: Proxy, redis_key=REDIS_KEY, proxy_score_max=PROXY_SCORE_MAX) -> int:
         """
         set proxy to max score
@@ -126,6 +134,7 @@ class RedisClient(object):
             return self.db.zadd(redis_key, proxy_score_max, proxy.string())
         return self.db.zadd(redis_key, {proxy.string(): proxy_score_max})
 
+    @measure_db_operation('count')
     def count(self, redis_key=REDIS_KEY) -> int:
         """
         get count of proxies
@@ -133,6 +142,7 @@ class RedisClient(object):
         """
         return self.db.zcard(redis_key)
 
+    @measure_db_operation('all')
     def all(self, redis_key=REDIS_KEY, proxy_score_min=PROXY_SCORE_MIN, proxy_score_max=PROXY_SCORE_MAX) -> List[Proxy]:
         """
         get all proxies
@@ -140,6 +150,7 @@ class RedisClient(object):
         """
         return convert_proxy_or_proxies(self.db.zrangebyscore(redis_key, proxy_score_min, proxy_score_max))
 
+    @measure_db_operation('batch')
     def batch(self, cursor, count, redis_key=REDIS_KEY) -> List[Proxy]:
         """
         get batch of proxies
@@ -148,7 +159,7 @@ class RedisClient(object):
         :return: list of proxies
         """
         cursor, proxies = self.db.zscan(redis_key, cursor, count=count)
-        return cursor, convert_proxy_or_proxies([i[0] for i in proxies])
+        return cursor, convert_proxy_or_proxies([i[0] for i in proxies])  # type: ignore[return-value]
 
 
 if __name__ == '__main__':

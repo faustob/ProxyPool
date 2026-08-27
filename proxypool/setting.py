@@ -95,6 +95,9 @@ API_THREADED = env.bool('API_THREADED', True)
 # API_KEY='', do not need `API-KEY` header
 API_KEY = env.str('API_KEY', '')
 
+# p99 latency budget (seconds) above which a slow_request span event is recorded
+SLOW_REQUEST_THRESHOLD = env.float('SLOW_REQUEST_THRESHOLD', 1.0)
+
 # flags of enable
 ENABLE_TESTER = env.bool('ENABLE_TESTER', True)
 ENABLE_GETTER = env.bool('ENABLE_GETTER', True)
@@ -119,7 +122,7 @@ LOG_RETENTION = env.str('LOG_RETENTION', '1 week')
 if ENABLE_LOG_FILE:
     if ENABLE_LOG_RUNTIME_FILE:
         logger.add(env.str('LOG_RUNTIME_FILE', join(LOG_DIR, 'runtime.log')),
-                   level=LOG_LEVEL, rotation=LOG_ROTATION, retention=LOG_RETENTION)
+                   level=LOG_LEVEL, rotation=LOG_ROTATION, retention=LOG_RETENTION)  # type: ignore[arg-type]
     if ENABLE_LOG_ERROR_FILE:
         logger.add(env.str('LOG_ERROR_FILE', join(LOG_DIR, 'error.log')),
                    level='ERROR', rotation=LOG_ROTATION)
