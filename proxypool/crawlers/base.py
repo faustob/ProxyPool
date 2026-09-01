@@ -7,7 +7,7 @@ import time
 
 
 class BaseCrawler(object):
-    urls = []
+    urls = []  # type: ignore[var-annotated]
 
     @retry(stop_max_attempt_number=3, retry_on_result=lambda x: x is None, wait_fixed=2000)
     def fetch(self, url, **kwargs):

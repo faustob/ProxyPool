@@ -1,4 +1,5 @@
 from proxypool.schemas import Proxy
+from typing import Tuple
 
 
 def is_valid_proxy(data):
@@ -71,7 +72,7 @@ def is_auth_proxy(data: str) -> bool:
     return '@' in data
 
 
-def extract_auth_proxy(data: str) -> (str, str):
+def extract_auth_proxy(data: str) -> Tuple[str, str]:
     """
     extract host and port from a proxy with authentication
     """

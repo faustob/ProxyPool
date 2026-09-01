@@ -119,7 +119,7 @@ LOG_RETENTION = env.str('LOG_RETENTION', '1 week')
 if ENABLE_LOG_FILE:
     if ENABLE_LOG_RUNTIME_FILE:
         logger.add(env.str('LOG_RUNTIME_FILE', join(LOG_DIR, 'runtime.log')),
-                   level=LOG_LEVEL, rotation=LOG_ROTATION, retention=LOG_RETENTION)
+                   level=LOG_LEVEL, rotation=LOG_ROTATION, retention=LOG_RETENTION)  # type: ignore[arg-type]
     if ENABLE_LOG_ERROR_FILE:
         logger.add(env.str('LOG_ERROR_FILE', join(LOG_DIR, 'error.log')),
                    level='ERROR', rotation=LOG_ROTATION)

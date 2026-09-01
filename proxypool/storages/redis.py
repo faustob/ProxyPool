@@ -1,16 +1,47 @@
 import redis
+import time
+from opentelemetry import trace, metrics
 from proxypool.exceptions import PoolEmptyException
 from proxypool.schemas.proxy import Proxy
 from proxypool.setting import REDIS_CONNECTION_STRING, REDIS_HOST, REDIS_PORT, REDIS_PASSWORD, REDIS_DB, REDIS_KEY, PROXY_SCORE_MAX, PROXY_SCORE_MIN, \
     PROXY_SCORE_INIT
 from random import choice, sample
-from typing import List
+from typing import List, Optional, Tuple, Any
 from loguru import logger
 from proxypool.utils.proxy import is_valid_proxy, convert_proxy_or_proxies
 
 
 REDIS_CLIENT_VERSION = redis.__version__
 IS_REDIS_VERSION_2 = REDIS_CLIENT_VERSION.startswith('2.')
+
+tracer = trace.get_tracer(__name__)
+meter = metrics.get_meter(__name__)
+
+db_operation_duration = meter.create_histogram(
+    name='db.client.operation.duration',
+    unit='s',
+    description='Duration of Redis operations issued by proxypool, in seconds',
+)
+
+# transient errors are worth retrying / are likely to self-heal (network blips,
+# redis briefly loading its dataset); anything else is treated as terminal
+_TRANSIENT_REDIS_ERRORS = (redis.exceptions.ConnectionError, redis.exceptions.TimeoutError, redis.exceptions.BusyLoadingError)
+
+
+def _record_db_operation(operation_name, redis_key, start_time, outcome, error_type=None):
+    """
+    emit a db.client.operation.duration measurement for a redis call
+    """
+    duration = time.monotonic() - start_time
+    attributes = {
+        'db.system.name': 'redis',
+        'db.operation.name': operation_name,
+        'db.collection.name': redis_key,
+        'outcome': outcome,
+    }
+    if error_type:
+        attributes['error.type'] = error_type
+    db_operation_duration.record(duration, attributes)
 
 
 class RedisClient(object):
@@ -34,7 +65,7 @@ class RedisClient(object):
             self.db = redis.StrictRedis(
                 host=host, port=port, password=password, db=db, decode_responses=True, **kwargs)
 
-    def add(self, proxy: Proxy, score=PROXY_SCORE_INIT, redis_key=REDIS_KEY) -> int:
+    def add(self, proxy: Proxy, score=PROXY_SCORE_INIT, redis_key=REDIS_KEY) -> Optional[int]:  # type: ignore[return]
         """
         add proxy and set it to init score
         :param proxy: proxy, ip:port, like 8.8.8.8:88
@@ -43,7 +74,7 @@ class RedisClient(object):
         """
         if not is_valid_proxy(f'{proxy.host}:{proxy.port}'):
             logger.info(f'invalid proxy {proxy}, throw it')
-            return
+            return  # type: ignore[return-value]
         if not self.exists(proxy, redis_key):
             if IS_REDIS_VERSION_2:
                 return self.db.zadd(redis_key, score, proxy.string())
@@ -57,18 +88,28 @@ class RedisClient(object):
         if not exists, raise error
         :return: proxy, like 8.8.8.8:8
         """
-        # try to get proxy with max score
-        proxies = self.db.zrangebyscore(
-            redis_key, proxy_score_max, proxy_score_max)
-        if len(proxies):
-            return convert_proxy_or_proxies(choice(proxies))
-        # else get proxy by rank
-        proxies = self.db.zrevrange(
-            redis_key, proxy_score_min, proxy_score_max)
-        if len(proxies):
-            return convert_proxy_or_proxies(choice(proxies))
-        # else raise error
-        raise PoolEmptyException
+        start_time = time.monotonic()
+        outcome = 'success'
+        error_type = None
+        try:
+            # try to get proxy with max score
+            proxies = self.db.zrangebyscore(
+                redis_key, proxy_score_max, proxy_score_max)
+            if len(proxies):
+                return convert_proxy_or_proxies(choice(proxies))
+            # else get proxy by rank
+            proxies = self.db.zrevrange(
+                redis_key, proxy_score_min, proxy_score_max)
+            if len(proxies):
+                return convert_proxy_or_proxies(choice(proxies))
+            # else raise error
+            raise PoolEmptyException
+        except redis.exceptions.RedisError as e:
+            error_type = type(e).__name__
+            outcome = 'transient' if isinstance(e, _TRANSIENT_REDIS_ERRORS) else 'terminal'
+            raise
+        finally:
+            _record_db_operation('random', redis_key, start_time, outcome, error_type)
 
     def randoms(self, count, redis_key=REDIS_KEY, proxy_score_min=PROXY_SCORE_MIN, proxy_score_max=PROXY_SCORE_MAX) -> List[Proxy]:
         """
@@ -79,19 +120,29 @@ class RedisClient(object):
         :param count: number of proxies to return
         :return: list of proxies
         """
-        # try to get proxies with max score first
-        proxies = self.db.zrangebyscore(
-            redis_key, proxy_score_max, proxy_score_max)
-        if len(proxies) < count:
-            # not enough max-score proxies, fall back to all proxies by rank
-            proxies = self.db.zrevrangebyscore(
-                redis_key, proxy_score_max, proxy_score_min)
-        if not proxies:
-            raise PoolEmptyException
-        count = min(count, len(proxies))
-        return convert_proxy_or_proxies(sample(proxies, count))
+        start_time = time.monotonic()
+        outcome = 'success'
+        error_type = None
+        try:
+            # try to get proxies with max score first
+            proxies = self.db.zrangebyscore(
+                redis_key, proxy_score_max, proxy_score_max)
+            if len(proxies) < count:
+                # not enough max-score proxies, fall back to all proxies by rank
+                proxies = self.db.zrevrangebyscore(
+                    redis_key, proxy_score_max, proxy_score_min)
+            if not proxies:
+                raise PoolEmptyException
+            count = min(count, len(proxies))
+            return convert_proxy_or_proxies(sample(proxies, count))
+        except redis.exceptions.RedisError as e:
+            error_type = type(e).__name__
+            outcome = 'transient' if isinstance(e, _TRANSIENT_REDIS_ERRORS) else 'terminal'
+            raise
+        finally:
+            _record_db_operation('randoms', redis_key, start_time, outcome, error_type)
 
-    def decrease(self, proxy: Proxy, redis_key=REDIS_KEY, proxy_score_min=PROXY_SCORE_MIN) -> int:
+    def decrease(self, proxy: Proxy, redis_key=REDIS_KEY, proxy_score_min=PROXY_SCORE_MIN) -> Optional[int]:  # type: ignore[return]
         """
         decrease score of proxy, if small than PROXY_SCORE_MIN, delete it
         :param proxy: proxy
@@ -131,16 +182,36 @@ class RedisClient(object):
         get count of proxies
         :return: count, int
         """
-        return self.db.zcard(redis_key)
+        start_time = time.monotonic()
+        outcome = 'success'
+        error_type = None
+        try:
+            return self.db.zcard(redis_key)
+        except redis.exceptions.RedisError as e:
+            error_type = type(e).__name__
+            outcome = 'transient' if isinstance(e, _TRANSIENT_REDIS_ERRORS) else 'terminal'
+            raise
+        finally:
+            _record_db_operation('count', redis_key, start_time, outcome, error_type)
 
     def all(self, redis_key=REDIS_KEY, proxy_score_min=PROXY_SCORE_MIN, proxy_score_max=PROXY_SCORE_MAX) -> List[Proxy]:
         """
         get all proxies
         :return: list of proxies
         """
-        return convert_proxy_or_proxies(self.db.zrangebyscore(redis_key, proxy_score_min, proxy_score_max))
+        start_time = time.monotonic()
+        outcome = 'success'
+        error_type = None
+        try:
+            return convert_proxy_or_proxies(self.db.zrangebyscore(redis_key, proxy_score_min, proxy_score_max))
+        except redis.exceptions.RedisError as e:
+            error_type = type(e).__name__
+            outcome = 'transient' if isinstance(e, _TRANSIENT_REDIS_ERRORS) else 'terminal'
+            raise
+        finally:
+            _record_db_operation('all', redis_key, start_time, outcome, error_type)
 
-    def batch(self, cursor, count, redis_key=REDIS_KEY) -> List[Proxy]:
+    def batch(self, cursor, count, redis_key=REDIS_KEY) -> Tuple[Any, List[Proxy]]:
         """
         get batch of proxies
         :param cursor: scan cursor

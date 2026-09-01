@@ -1,6 +1,8 @@
 import hmac
 import re
+import time
 from flask import Flask, g, request, abort
+from opentelemetry import trace, metrics
 from proxypool.exceptions import PoolEmptyException
 from proxypool.storages.redis import RedisClient
 from proxypool.setting import API_HOST, API_PORT, API_THREADED, API_KEY, IS_DEV, PROXY_RAND_KEY_DEGRADED
@@ -14,9 +16,82 @@ app = Flask(__name__)
 if IS_DEV:
     app.debug = True
 
+# OTel instruments: get_tracer/get_meter return proxy objects that rebind
+# automatically once the SDK is registered (see proxypool/telemetry.py, wired
+# from proxypool/scheduler.py's run_server, which runs post-fork in the child
+# process that actually serves this app)
+tracer = trace.get_tracer(__name__)
+meter = metrics.get_meter(__name__)
+
+# budget used to flag a request as slow for the P99 triage SLI
+SLOW_REQUEST_THRESHOLD_SECONDS = 1.0
+
+http_server_request_duration = meter.create_histogram(
+    name='http.server.request.duration',
+    unit='s',
+    description='Duration of inbound HTTP requests, in seconds',
+)
+
+http_server_request_count = meter.create_counter(
+    name='http.server.request.count',
+    unit='1',
+    description='Count of inbound HTTP requests by route and outcome class',
+)
+
 # allowed characters for the `key` query parameter that selects a redis sub-pool;
 # restricts to a safe charset to avoid probing arbitrary redis keys via the API
 VALID_KEY_PATTERN = re.compile(r'^[a-zA-Z0-9_:\-]{1,64}$')
+
+
+@app.before_request
+def _start_request_timer():
+    """
+    record the start time of the request for duration measurement
+    """
+    g._otel_request_start = time.monotonic()
+
+
+@app.after_request
+def _record_request_metrics(response):
+    """
+    emit http.server.request.duration / http.server.request.count for every
+    response, and a slow-request span event when the P99 budget is exceeded
+    """
+    start_time = getattr(g, '_otel_request_start', None)
+    duration = time.monotonic() - start_time if start_time is not None else 0
+    route = request.url_rule.rule if request.url_rule is not None else 'other'
+    outcome = 'success' if response.status_code < 500 else 'error'
+    attributes = {
+        'http.request.method': request.method,
+        'url.scheme': request.scheme,
+        'http.response.status_code': response.status_code,
+        'http.route': route,
+    }
+    error_type = getattr(g, '_otel_error_type', None)
+    if error_type:
+        attributes['error.type'] = error_type
+    http_server_request_duration.record(duration, attributes)
+    http_server_request_count.add(1, {'http.route': route, 'outcome': outcome})
+    if duration > SLOW_REQUEST_THRESHOLD_SECONDS:
+        trace.get_current_span().add_event('slow_request', {
+            'http.route': route,
+            'duration_seconds': duration,
+        })
+    return response
+
+
+@app.errorhandler(Exception)
+def _handle_exception(exc):
+    """
+    tag the server span with the originating exception type before returning
+    a generic 500; this only fires for exceptions that were previously left
+    unhandled by Flask (HTTPException/abort() responses are unaffected)
+    """
+    g._otel_error_type = type(exc).__name__
+    span = trace.get_current_span()
+    span.set_attribute('error.type', type(exc).__name__)
+    span.set_status(trace.StatusCode.ERROR, str(exc))
+    return {'error': 'internal_error'}, 500
 
 
 def auth_required(func):
