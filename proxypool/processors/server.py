@@ -3,6 +3,7 @@ import re
 import time
 from flask import Flask, g, request, abort
 from opentelemetry import trace, metrics
+from proxypool.telemetry import init_telemetry
 from proxypool.exceptions import PoolEmptyException
 from proxypool.storages.redis import RedisClient
 from proxypool.setting import API_HOST, API_PORT, API_THREADED, API_KEY, IS_DEV, PROXY_RAND_KEY_DEGRADED
@@ -15,6 +16,11 @@ __all__ = ['app']
 app = Flask(__name__)
 if IS_DEV:
     app.debug = True
+
+# Register the OTel SDK for this process. server.py is served from a child
+# process spawned post-fork by proxypool/scheduler.py's run_server, so it is
+# safe to build/register providers here at import time of this module.
+init_telemetry(service_name='proxypool-server')
 
 # OTel instruments: get_tracer/get_meter return proxy objects that rebind
 # automatically once the SDK is registered (see proxypool/telemetry.py, wired
@@ -33,7 +39,7 @@ http_server_request_duration = meter.create_histogram(
 )
 
 http_server_request_count = meter.create_counter(
-    name='http.server.request.count',
+    name='http.server.request.outcomes',
     unit='1',
     description='Count of inbound HTTP requests by route and outcome class',
 )
