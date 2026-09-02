@@ -7,12 +7,14 @@ from proxypool.setting import API_HOST, API_PORT, API_THREADED, API_KEY, IS_DEV,
 import functools
 from random import choice, sample
 from proxypool.utils.geo import get_country_iso
+from opentelemetry.instrumentation.flask import FlaskInstrumentor
 
 __all__ = ['app']
 
 app = Flask(__name__)
 if IS_DEV:
     app.debug = True
+FlaskInstrumentor().instrument_app(app)
 
 # allowed characters for the `key` query parameter that selects a redis sub-pool;
 # restricts to a safe charset to avoid probing arbitrary redis keys via the API

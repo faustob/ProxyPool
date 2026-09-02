@@ -34,7 +34,7 @@ class RedisClient(object):
             self.db = redis.StrictRedis(
                 host=host, port=port, password=password, db=db, decode_responses=True, **kwargs)
 
-    def add(self, proxy: Proxy, score=PROXY_SCORE_INIT, redis_key=REDIS_KEY) -> int:
+    def add(self, proxy: Proxy, score=PROXY_SCORE_INIT, redis_key=REDIS_KEY) -> int:  # type: ignore[return]
         """
         add proxy and set it to init score
         :param proxy: proxy, ip:port, like 8.8.8.8:88
@@ -43,7 +43,7 @@ class RedisClient(object):
         """
         if not is_valid_proxy(f'{proxy.host}:{proxy.port}'):
             logger.info(f'invalid proxy {proxy}, throw it')
-            return
+            return  # type: ignore[return-value]
         if not self.exists(proxy, redis_key):
             if IS_REDIS_VERSION_2:
                 return self.db.zadd(redis_key, score, proxy.string())
@@ -91,7 +91,7 @@ class RedisClient(object):
         count = min(count, len(proxies))
         return convert_proxy_or_proxies(sample(proxies, count))
 
-    def decrease(self, proxy: Proxy, redis_key=REDIS_KEY, proxy_score_min=PROXY_SCORE_MIN) -> int:
+    def decrease(self, proxy: Proxy, redis_key=REDIS_KEY, proxy_score_min=PROXY_SCORE_MIN) -> int:  # type: ignore[return]
         """
         decrease score of proxy, if small than PROXY_SCORE_MIN, delete it
         :param proxy: proxy
@@ -148,7 +148,7 @@ class RedisClient(object):
         :return: list of proxies
         """
         cursor, proxies = self.db.zscan(redis_key, cursor, count=count)
-        return cursor, convert_proxy_or_proxies([i[0] for i in proxies])
+        return cursor, convert_proxy_or_proxies([i[0] for i in proxies])  # type: ignore[return-value]
 
 
 if __name__ == '__main__':

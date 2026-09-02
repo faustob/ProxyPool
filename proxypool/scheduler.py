@@ -3,6 +3,7 @@ import multiprocessing
 from proxypool.processors.server import app
 from proxypool.processors.getter import Getter
 from proxypool.processors.tester import Tester
+from proxypool.telemetry import init_telemetry
 from proxypool.setting import APP_PROD_METHOD_GEVENT, APP_PROD_METHOD_MEINHELD, APP_PROD_METHOD_TORNADO, CYCLE_GETTER, CYCLE_TESTER, API_HOST, \
     API_THREADED, API_PORT, ENABLE_SERVER, IS_PROD, APP_PROD_METHOD, \
     ENABLE_GETTER, ENABLE_TESTER, IS_WINDOWS
@@ -27,6 +28,7 @@ class Scheduler():
         if not ENABLE_TESTER:
             logger.info('tester not enabled, exit')
             return
+        init_telemetry()
         tester = Tester()
         loop = 0
         while True:
@@ -42,6 +44,7 @@ class Scheduler():
         if not ENABLE_GETTER:
             logger.info('getter not enabled, exit')
             return
+        init_telemetry()
         getter = Getter()
         loop = 0
         while True:
@@ -57,6 +60,7 @@ class Scheduler():
         if not ENABLE_SERVER:
             logger.info('server not enabled, exit')
             return
+        init_telemetry()
         if IS_PROD:
             if APP_PROD_METHOD == APP_PROD_METHOD_GEVENT:
                 try:

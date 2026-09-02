@@ -9,7 +9,7 @@ import urllib3
 from fake_headers import Headers
 import uuid
 from geolite2 import geolite2
-ips = []
+ips: list = []
 
 # 爬数据的线程类
 
